@@ -283,6 +283,9 @@ class CppGenerator : public BaseGenerator {
         code_ += "#pragma clang system_header\n\n";
       }
 
+      code_ += "#include \"flatbuffers/flatbuffers.h\"";
+      code_ += "";
+
       SetNameSpace(struct_def.defined_namespace);
       auto name = Name(struct_def);
       code_.SetValue("STRUCT_NAME", name);
@@ -1471,9 +1474,11 @@ class CppGenerator : public BaseGenerator {
             "      auto ptr = reinterpret_cast<const {{TYPE}} *>(obj);";
         if (ev.union_type.base_type == BASE_TYPE_STRUCT) {
           if (ev.union_type.struct_def->fixed) {
+            code_.SetValue("ALIGN",
+              NumToString(ev.union_type.struct_def->minalign));
             code_ +=
-                "      return verifier.Verify<{{TYPE}}>(static_cast<const "
-                "uint8_t *>(obj), 0);";
+                "      return verifier.VerifyField<{{TYPE}}>("
+                "static_cast<const uint8_t *>(obj), 0, {{ALIGN}});";
           } else {
             code_ += getptr;
             code_ += "      return verifier.VerifyTable(ptr);";
@@ -1951,8 +1956,9 @@ class CppGenerator : public BaseGenerator {
     code_.SetValue("SIZE", GenTypeSize(field.value.type));
     code_.SetValue("OFFSET", GenFieldOffsetName(field));
     if (IsScalar(field.value.type.base_type) || IsStruct(field.value.type)) {
-      code_ +=
-          "{{PRE}}VerifyField{{REQUIRED}}<{{SIZE}}>(verifier, {{OFFSET}})\\";
+      code_.SetValue("ALIGN", NumToString(InlineAlignment(field.value.type)));
+      code_ += "{{PRE}}VerifyField{{REQUIRED}}<{{SIZE}}>(verifier, "
+               "{{OFFSET}}, {{ALIGN}})\\";
     } else {
       code_ += "{{PRE}}VerifyOffset{{REQUIRED}}(verifier, {{OFFSET}})\\";
     }
@@ -1999,6 +2005,17 @@ class CppGenerator : public BaseGenerator {
           }
           default: break;
         }
+
+        auto nfn = GetNestedFlatBufferName(field);
+        if (!nfn.empty()) {
+          code_.SetValue("CPP_NAME", nfn);
+          // FIXME: file_identifier.
+          code_ += "{{PRE}}verifier.VerifyNestedFlatBuffer<{{CPP_NAME}}>"
+                   "({{NAME}}(), nullptr)\\";
+        } else if (field.flexbuffer) {
+          code_ += "{{PRE}}flexbuffers::VerifyNestedFlexBuffer"
+                   "({{NAME}}(), verifier)\\";        
+        }
         break;
       }
       default: {
@@ -2022,8 +2039,8 @@ class CppGenerator : public BaseGenerator {
     code_ += "  }";
 
     if (is_string) {
-      code_ += "  int KeyCompareWithValue(const char *val) const {";
-      code_ += "    return strcmp({{FIELD_NAME}}()->c_str(), val);";
+      code_ += "  int KeyCompareWithValue(const char *_{{FIELD_NAME}}) const {";
+      code_ += "    return strcmp({{FIELD_NAME}}()->c_str(), _{{FIELD_NAME}});";
       code_ += "  }";
     } else {
       FLATBUFFERS_ASSERT(IsScalar(field.value.type.base_type));
@@ -2034,10 +2051,10 @@ class CppGenerator : public BaseGenerator {
       }
       // Returns {field<val: -1, field==val: 0, field>val: +1}.
       code_.SetValue("KEY_TYPE", type);
-      code_ += "  int KeyCompareWithValue({{KEY_TYPE}} val) const {";
+      code_ += "  int KeyCompareWithValue({{KEY_TYPE}} _{{FIELD_NAME}}) const {";
       code_ +=
-          "    return static_cast<int>({{FIELD_NAME}}() > val) - "
-          "static_cast<int>({{FIELD_NAME}}() < val);";
+          "    return static_cast<int>({{FIELD_NAME}}() > _{{FIELD_NAME}}) - "
+          "static_cast<int>({{FIELD_NAME}}() < _{{FIELD_NAME}});";
       code_ += "  }";
     }
   }
@@ -2294,6 +2311,21 @@ class CppGenerator : public BaseGenerator {
     }
   }
 
+  std::string GetNestedFlatBufferName(const FieldDef &field) {
+    auto nested = field.attributes.Lookup("nested_flatbuffer");
+    if (!nested) return "";
+    std::string qualified_name = nested->constant;
+    auto nested_root = parser_.LookupStruct(nested->constant);
+    if (nested_root == nullptr) {
+      qualified_name =
+          parser_.current_namespace_->GetFullyQualifiedName(nested->constant);
+      nested_root = parser_.LookupStruct(qualified_name);
+    }
+    FLATBUFFERS_ASSERT(nested_root);  // Guaranteed to exist by parser.
+    (void)nested_root;
+    return TranslateNameSpace(qualified_name);
+  }
+
   // Generate an accessor struct, builder structs & function for a table.
   void GenTable(const StructDef &struct_def) {
     if (opts_.generate_object_based_api) { GenNativeTable(struct_def); }
@@ -2357,19 +2389,9 @@ class CppGenerator : public BaseGenerator {
       GenTableFieldGetter(field);
       if (opts_.mutable_buffer) { GenTableFieldSetter(field); }
 
-      auto nested = field.attributes.Lookup("nested_flatbuffer");
-      if (nested) {
-        std::string qualified_name = nested->constant;
-        auto nested_root = parser_.LookupStruct(nested->constant);
-        if (nested_root == nullptr) {
-          qualified_name = parser_.current_namespace_->GetFullyQualifiedName(
-              nested->constant);
-          nested_root = parser_.LookupStruct(qualified_name);
-        }
-        FLATBUFFERS_ASSERT(nested_root);  // Guaranteed to exist by parser.
-        (void)nested_root;
-        code_.SetValue("CPP_NAME", TranslateNameSpace(qualified_name));
-
+      auto nfn = GetNestedFlatBufferName(field);
+      if (!nfn.empty()) {
+        code_.SetValue("CPP_NAME", nfn);
         code_ += "  const {{CPP_NAME}} *{{FIELD_NAME}}_nested_root() const {";
         code_ +=
             "    return "

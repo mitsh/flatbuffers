@@ -922,7 +922,7 @@ class FlatBufferBuilder {
   /// where the vector is stored.
   template<typename T>
   Offset<Vector<const T *>> CreateVectorOfSortedStructs(T *v, size_t len) {
-    std::sort(v, v + len, StructKeyComparator<T>());
+    std::stable_sort(v, v + len, StructKeyComparator<T>());
     return CreateVectorOfStructs(v, len);
   }
 
@@ -941,7 +941,7 @@ class FlatBufferBuilder {
     extern T Pack(const S &);
     auto structs = StartVectorOfStructs<T>(len);
     for (size_t i = 0; i < len; i++) { structs[i] = Pack(v[i]); }
-    std::sort(structs, structs + len, StructKeyComparator<T>());
+    std::stable_sort(structs, structs + len, StructKeyComparator<T>());
     return EndVectorOfStructs<T>(len);
   }
 
@@ -973,7 +973,7 @@ class FlatBufferBuilder {
   template<typename T>
   Offset<Vector<Offset<T>>> CreateVectorOfSortedTables(Offset<T> *v,
                                                        size_t len) {
-    std::sort(v, v + len, TableKeyComparator<T>(buf_));
+    std::stable_sort(v, v + len, TableKeyComparator<T>(buf_));
     return CreateVector(v, len);
   }
 
@@ -1074,6 +1074,10 @@ class FlatBufferBuilder {
   void SwapBufAllocator(FlatBufferBuilder &other) {
     buf_.swap_allocator(other.buf_);
   }
+  
+  /// @brief The length of a FlatBuffer file header.
+  static const size_t kFileIdentifierLength =
+      ::flatbuffers::kFileIdentifierLength;
 
  protected:
   // You shouldn't really be copying instances of this class.
